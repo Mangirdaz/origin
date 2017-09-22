@@ -24,6 +24,7 @@ import (
 	configcmd "github.com/openshift/origin/pkg/config/cmd"
 	"github.com/openshift/origin/pkg/oc/admin/policy"
 	"github.com/openshift/origin/pkg/oc/bootstrap/docker/errors"
+	routeapi "github.com/openshift/origin/pkg/route/apis/route"
 	"github.com/openshift/origin/pkg/security/legacyclient"
 )
 
@@ -75,12 +76,29 @@ func (h *Helper) InstallRegistry(kubeClient kclientset.Interface, f *clientcmd.F
 		return errors.NewError("cannot decode registry objects").WithCause(utilerrors.NewAggregate(errs))
 	}
 
-	// Update the ClusterIP on the Docker registry service definition
+	// Update the ClusterIP on the Docker registry service definition & create route object for it
+	var route *routeapi.Route
 	for _, item := range objList.Items {
 		if svc, ok := item.(*kapi.Service); ok {
 			svc.Spec.ClusterIP = RegistryServiceIP
+			//construct route obj
+			route = &routeapi.Route{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   SvcDockerRegistry,
+					Labels: svc.Labels,
+				},
+				Spec: routeapi.RouteSpec{
+					To: routeapi.RouteTargetReference{
+						Name: svc.Name,
+					},
+					TLS: &routeapi.TLSConfig{
+						Termination: "Edge",
+					},
+				},
+			}
 		}
 	}
+	objList.Items = append(objList.Items, route)
 
 	// Create objects
 	mapper := clientcmd.ResourceMapper(f)
@@ -92,6 +110,7 @@ func (h *Helper) InstallRegistry(kubeClient kclientset.Interface, f *clientcmd.F
 		err = utilerrors.NewAggregate(errs)
 		return errors.NewError("cannot create registry objects").WithCause(err)
 	}
+
 	return nil
 }
 
