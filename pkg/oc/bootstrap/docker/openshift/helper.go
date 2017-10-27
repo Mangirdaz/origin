@@ -48,11 +48,16 @@ const (
 	aggregatorCACert            = "front-proxy-ca.crt"
 	aggregatorCAKey             = "front-proxy-ca.key"
 	aggregatorCASerial          = "frontend-proxy-ca.serial.txt"
+	serverCAPath                = serverConfigPath + "/master/ca.crt"
 	aggregatorKeyPath           = serverConfigPath + "/master/" + aggregatorKey
 	aggregatorCertPath          = serverConfigPath + "/master/" + aggregatorCert
 	aggregatorCACertPath        = serverConfigPath + "/master/" + aggregatorCACert
 	aggregatorCAKeyPath         = serverConfigPath + "/master/" + aggregatorCAKey
 	aggregatorCASerialPath      = serverConfigPath + "/master/" + aggregatorCASerial
+	hostDockerCertPath          = "/etc/docker/certs.d"
+	hostDockerLatestCertPath    = "/etc/docker-latest/certs.d"
+	hostDockerCertName          = "registry.crt"
+	hostDockerCertPermissions   = 644
 	DefaultDNSPort              = 53
 	AlternateDNSPort            = 8053
 	cmdDetermineNodeHost        = "for name in %s; do ls /var/lib/origin/openshift.local.config/node-$name &> /dev/null && echo $name && break; done"
@@ -68,6 +73,9 @@ var (
 		"/sys:/sys:rw",
 		"/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"/dev:/dev",
+	}
+	dockerConfigBinds = []string{
+		"/etc:/etc:rw",
 	}
 	BasePorts             = []int{4001, 7001, 8443, 10250}
 	RouterPorts           = []int{80, 443}
@@ -362,7 +370,14 @@ func (h *Helper) Start(opt *StartOptions, out io.Writer) (string, error) {
 			cleanupConfig()
 			return "", errors.NewError("could not update OpenShift configuration").WithCause(err)
 		}
+		//Update host container runtime certs for trust. We do this ONLY if user do not specify keep-config
+		cfg, _, err := h.GetConfigFromLocalDir(configDir)
+		err = h.configureHostDocker(fmt.Sprintf("%s-%s.%s", SvcDockerRegistry, DefaultNamespace, cfg.RoutingConfig.Subdomain), opt.HostConfigDir)
+		if err != nil {
+			fmt.Printf("Warrning: Can't configure docker daemon with registry certificates with error: %s\n", err)
+		}
 	}
+
 	fmt.Fprintf(out, "Starting OpenShift using container '%s'\n", h.containerName)
 	startCmd := []string{
 		"start",
@@ -981,4 +996,41 @@ kubelet --help | grep -- "--cgroup-driver"
 		Run()
 
 	return rc == 0 && err == nil
+}
+
+// configureHostDocker configures oc cluster up underlying host container runtime
+func (h *Helper) configureHostDocker(registryURL, HostConfigDir string) error {
+	glog.V(1).Info("Copy master CA to host docker certificates location")
+	dockerConfigBinds = append(dockerConfigBinds, fmt.Sprintf("%s:%s:rw", HostConfigDir, serverConfigPath))
+	script := `#!/bin/bash
+	# Exit with an error
+	set -e
+	if [[ -d ` + hostDockerCertPath + ` ]]; then
+      	mkdir -p ` + fmt.Sprintf("%s/%s", hostDockerCertPath, registryURL) + `
+	    cp ` + fmt.Sprintf("%s %s/%s/%s", serverCAPath, hostDockerCertPath, registryURL, hostDockerCertName) + `
+	else
+	  	mkdir -p ` + fmt.Sprintf("%s/%s", hostDockerLatestCertPath, registryURL) + `
+	    cp ` + fmt.Sprintf("%s %s/%s/%s", serverCAPath, hostDockerLatestCertPath, registryURL, hostDockerCertName) + `
+    fi
+	`
+	id, err := h.runHelper.New().Image(h.image).
+		DiscardContainer().
+		HostPid().
+		Privileged().
+		Bind(dockerConfigBinds...).
+		Entrypoint("/bin/bash").
+		Command("-c", script).
+		Run()
+	if err != nil || id != 0 {
+		return errors.NewError("cannot copy registry ca to host docker trust folder").WithCause(err)
+	}
+	return err
+}
+
+// RegistryHost returns registry url with suffix
+func RegistryHost(routingSuffix, serverIP string) string {
+	if len(routingSuffix) > 0 {
+		return fmt.Sprintf("%s-%s.%s", SvcDockerRegistry, DefaultNamespace, routingSuffix)
+	}
+	return fmt.Sprintf("%s-%s.%s.nip.io", SvcDockerRegistry, DefaultNamespace, serverIP)
 }
