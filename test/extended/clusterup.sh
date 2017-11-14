@@ -53,6 +53,13 @@ function os::test::extended::clusterup::verify_persistent_volumes () {
     os::cmd::expect_success "oc login -u developer"
 }
 
+function os::test::extended::clusterup::skip_persistent_volumes () {
+    mkdir -p /tmp/pv
+    touch /tmp/pv/.skip_pv
+    os::cmd::expect_success_and_text "oc cluster up --host-pv-dir=/tmp/pv/" "Skip persistent volume creation"
+    os::cmd::expect_success_and_text "ls /tmp/pv/ | grep -v ^l | wc -l" "1"
+}
+
 function os::test::extended::clusterup::verify_metrics () {
     os::cmd::expect_success "oc login -u system:admin"
     os::cmd::expect_success_and_text "oc get pods -n openshift-infra" "metrics-deployer"
@@ -112,6 +119,10 @@ function os::test::extended::clusterup::standard_test () {
     os::test::extended::clusterup::verify_image_streams
     os::test::extended::clusterup::verify_ruby_build
     os::test::extended::clusterup::verify_persistent_volumes
+    
+    #test .skip_pv option
+    os::test::extended::clusterup::cleanup
+    os::test::extended::clusterup::skip_persistent_volumes
 }
 
 
