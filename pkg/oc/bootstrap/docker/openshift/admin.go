@@ -24,6 +24,8 @@ import (
 	configcmd "github.com/openshift/origin/pkg/config/cmd"
 	"github.com/openshift/origin/pkg/oc/admin/policy"
 	"github.com/openshift/origin/pkg/oc/bootstrap/docker/errors"
+	routeapi "github.com/openshift/origin/pkg/route/apis/route"
+
 	securitytypedclient "github.com/openshift/origin/pkg/security/generated/internalclientset/typed/security/internalversion"
 )
 
@@ -34,6 +36,7 @@ const (
 	masterConfigDir   = "/var/lib/origin/openshift.local.config/master"
 	RegistryServiceIP = "172.30.1.1"
 	routerCertPath    = masterConfigDir + "/router.pem"
+	RegistryRouteTLS  = "Edge"
 )
 
 // InstallRegistry checks whether a registry is installed and installs one if not already installed
@@ -259,4 +262,29 @@ func catFiles(dest string, src ...string) error {
 		}
 	}
 	return nil
+}
+
+func getRegistryRoute(list []runtime.Object) *routeapi.Route {
+	var route *routeapi.Route
+	for _, item := range list {
+		if svc, ok := item.(*kapi.Service); ok {
+			svc.Spec.ClusterIP = RegistryServiceIP
+			//construct route obj
+			route = &routeapi.Route{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   SvcDockerRegistry,
+					Labels: svc.Labels,
+				},
+				Spec: routeapi.RouteSpec{
+					To: routeapi.RouteTargetReference{
+						Name: svc.Name,
+					},
+					TLS: &routeapi.TLSConfig{
+						Termination: RegistryRouteTLS,
+					},
+				},
+			}
+		}
+	}
+	return route
 }

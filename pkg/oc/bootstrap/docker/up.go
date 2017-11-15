@@ -1156,6 +1156,11 @@ func (c *ClientStartConfig) ServerInfo(out io.Writer) error {
 		msg += "To login as administrator:\n" +
 			"    oc login -u system:admin\n\n"
 	}
+	registryURL := openshift.GetRegistryHost(c.RoutingSuffix, c.ServerIP)
+
+	msg += fmt.Sprintf("You can access internal image registry via url %[1]s:\n"+
+		"    To login using docker:\n"+
+		"    docker login %[1]s -u developer -p $(oc whoami -t)\n", registryURL)
 
 	msg += c.checkProxySettings()
 
