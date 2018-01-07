@@ -208,6 +208,18 @@ func (r *REST) Create(ctx apirequest.Context, obj runtime.Object, createValidati
 		return nil, kapierrors.NewInternalError(err)
 	}
 
+	// check imported images status. If we get authentication error (401), try import same image without authentication.
+	// Docker registry gives 401 on public images if you have wrong secret in your secret list.
+	for _, image := range isi.Status.Images {
+		if image.Status.Code == http.StatusUnauthorized {
+			importCtx := registryclient.NewContext(r.transport, r.insecureTransport).WithCredentials(nil)
+			imports := r.importFn(importCtx)
+			if err := imports.Import(ctx.(gocontext.Context), isi, stream); err != nil {
+				return nil, kapierrors.NewInternalError(err)
+			}
+		}
+	}
+
 	// if we encountered an error loading credentials and any images could not be retrieved with an access
 	// related error, modify the message.
 	// TODO: set a status cause
