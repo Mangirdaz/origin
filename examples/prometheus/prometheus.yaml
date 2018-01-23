@@ -28,6 +28,10 @@ parameters:
   name: SESSION_SECRET
   generate: expression
   from: "[a-zA-Z0-9]{43}"
+- description: The secret for the AlertManager
+  name: ALERTMANAGER_SECRET
+  generate: expression
+  from: "[a-zA-Z0-9]{43}"
 
 objects:
 # Authorize the prometheus service account to read data about the cluster
@@ -38,8 +42,15 @@ objects:
     namespace: "${NAMESPACE}"
     annotations:
       serviceaccounts.openshift.io/oauth-redirectreference.prom: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"prometheus"}}'
-      serviceaccounts.openshift.io/oauth-redirectreference.alerts: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"alerts"}}'
       serviceaccounts.openshift.io/oauth-redirectreference.alertmanager: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"alertmanager"}}'
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: alerts
+    namespace: "${NAMESPACE}"
+    annotations:
+      serviceaccounts.openshift.io/oauth-redirectreference.alerts: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"alerts"}}'
+
 - apiVersion: authorization.openshift.io/v1
   kind: ClusterRoleBinding
   metadata:
@@ -49,6 +60,9 @@ objects:
   subjects:
   - kind: ServiceAccount
     name: prometheus
+    namespace: "${NAMESPACE}"
+  - kind: ServiceAccount
+    name: alerts
     namespace: "${NAMESPACE}"
 
 # Create a fully end-to-end TLS connection to the prometheus proxy
@@ -63,6 +77,7 @@ objects:
     tls:
       termination: Reencrypt
       insecureEdgeTerminationPolicy: Redirect
+
 - apiVersion: v1
   kind: Service
   metadata:
@@ -82,6 +97,7 @@ objects:
       targetPort: 8443
     selector:
       app: prometheus
+
 - apiVersion: v1
   kind: Secret
   metadata:
@@ -102,6 +118,7 @@ objects:
     tls:
       termination: Reencrypt
       insecureEdgeTerminationPolicy: Redirect
+
 - apiVersion: v1
   kind: Service
   metadata:
@@ -118,7 +135,8 @@ objects:
       protocol: TCP
       targetPort: 9443
     selector:
-      app: prometheus
+      app: alerts
+
 - apiVersion: v1
   kind: Secret
   metadata:
@@ -156,6 +174,7 @@ objects:
       targetPort: 10443
     selector:
       app: prometheus
+
 - apiVersion: v1
   kind: Secret
   metadata:
@@ -175,6 +194,8 @@ objects:
     updateStrategy:
       type: RollingUpdate
     podManagementPolicy: Parallel
+    serviceName: prometheus
+    replicas: 2
     selector:
       matchLabels:
         app: prometheus
@@ -219,57 +240,16 @@ objects:
 
         - name: prometheus
           args:
-          - --storage.tsdb.retention=6h
+          - --storage.tsdb.retention=24h
           - --config.file=/etc/prometheus/prometheus.yml
           - --web.listen-address=localhost:9090
           image: ${IMAGE_PROMETHEUS}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: IfNotPresent   
           volumeMounts:
           - mountPath: /etc/prometheus
             name: prometheus-config
           - mountPath: /prometheus
             name: prometheus-data
-
-        # Deploy alertmanager behind prometheus-alert-buffer behind an oauth proxy
-        # use http port=4190 and https port=9943 to differ from prom-proxy
-        - name: alerts-proxy
-          image: ${IMAGE_PROXY}
-          imagePullPolicy: IfNotPresent
-          ports:
-          - containerPort: 9443
-            name: web
-          args:
-          - -provider=openshift
-          - -https-address=:9443
-          - -http-address=
-          - -email-domain=*
-          - -upstream=http://localhost:9099
-          - -client-id=system:serviceaccount:${NAMESPACE}:prometheus
-          - -openshift-ca=/etc/pki/tls/cert.pem
-          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-          - '-openshift-sar={"resource": "namespaces", "verb": "get", "resourceName": "${NAMESPACE}", "namespace": "${NAMESPACE}"}'
-          - '-openshift-delegate-urls={"/": {"resource": "namespaces", "verb": "get", "resourceName": "${NAMESPACE}", "namespace": "${NAMESPACE}"}}'
-          - -tls-cert=/etc/tls/private/tls.crt
-          - -tls-key=/etc/tls/private/tls.key
-          - -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
-          - -cookie-secret-file=/etc/proxy/secrets/session_secret
-          volumeMounts:
-          - mountPath: /etc/tls/private
-            name: alerts-tls-secret
-          - mountPath: /etc/proxy/secrets
-            name: alerts-proxy-secrets
-
-        - name: alert-buffer
-          args:
-          - --storage-path=/alert-buffer/messages.db
-          image: ${IMAGE_ALERT_BUFFER}
-          imagePullPolicy: IfNotPresent
-          volumeMounts:
-          - mountPath: /alert-buffer
-            name: alerts-data
-          ports:
-          - containerPort: 9099
-            name: alert-buf
 
         - name: alertmanager-proxy
           image: ${IMAGE_PROXY}
@@ -301,12 +281,18 @@ objects:
 
         - name: alertmanager
           args:
-          - -config.file=/etc/alertmanager/alertmanager.yml
+          - --config.file=/etc/alertmanager/alertmanager.yml
+          - --mesh.password=${ALERTMANAGER_SECRET}
+          - --log.level=debug
+          - --mesh.peer=prometheus-0.prometheus.${NAMESPACE}.endpoints.cluster.local:6783
+          - --mesh.peer=prometheus-1.prometheus.${NAMESPACE}.endpoints.cluster.local:6783
           image: ${IMAGE_ALERTMANAGER}
           imagePullPolicy: IfNotPresent
           ports:
           - containerPort: 9093
             name: web
+          - containerPort: 6783
+            name: mesh
           volumeMounts:
           - mountPath: /etc/alertmanager
             name: alertmanager-config
@@ -338,16 +324,83 @@ objects:
             secretName: alertmanager-tls  
         - name: alertmanager-proxy-secret
           secret:
-            secretName: alertmanager-proxy         
+            secretName: alertmanager-proxy   
+        - name: alertmanager-data
+          emptyDir: {}      
 
+- apiVersion: apps/v1beta1
+  kind: StatefulSet
+  metadata:
+    labels:
+      app: alerts
+    name: alerts
+    namespace: "${NAMESPACE}"
+  spec:
+    updateStrategy:
+      type: RollingUpdate
+    podManagementPolicy: Parallel
+    serviceName: alerts
+    replicas: 1
+    selector:
+      matchLabels:
+        app: alerts
+    template:
+      metadata:
+        labels:
+          app: alerts
+        name: alerts
+      spec:
+        serviceAccountName: alerts
+        containers:
+        
+        # Deploy alert-buffer behind an oauth proxy
+        - name: alerts-proxy
+          image: ${IMAGE_PROXY}
+          imagePullPolicy: IfNotPresent
+          ports:
+          - containerPort: 9443
+            name: web
+          args:
+          - -provider=openshift
+          - -https-address=:9443
+          - -http-address=
+          - -email-domain=*
+          - -upstream=http://localhost:9099
+          - -client-id=system:serviceaccount:${NAMESPACE}:alerts
+          - -openshift-ca=/etc/pki/tls/cert.pem
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - '-openshift-sar={"resource": "namespaces", "verb": "get", "resourceName": "${NAMESPACE}", "namespace": "${NAMESPACE}"}'
+          - '-openshift-delegate-urls={"/": {"resource": "namespaces", "verb": "get", "resourceName": "${NAMESPACE}", "namespace": "${NAMESPACE}"}}'
+          - -tls-cert=/etc/tls/private/tls.crt
+          - -tls-key=/etc/tls/private/tls.key
+          - -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          - -cookie-secret-file=/etc/proxy/secrets/session_secret
+          volumeMounts:
+          - mountPath: /etc/tls/private
+            name: alerts-tls-secret
+          - mountPath: /etc/proxy/secrets
+            name: alerts-proxy-secrets
+
+        - name: alert-buffer
+          args:
+          - --storage-path=/alert-buffer/messages.db
+          image: ${IMAGE_ALERT_BUFFER}
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+          - mountPath: /alert-buffer
+            name: alerts-data
+          ports:
+          - containerPort: 9099
+            name: alert-buf
+
+        restartPolicy: Always
+        volumes:
         - name: alerts-proxy-secrets
           secret:
             secretName: alerts-proxy
         - name: alerts-tls-secret
           secret:
             secretName: alerts-tls
-        - name: alertmanager-data
-          emptyDir: {}
         - name: alerts-data
           emptyDir: {}
 
@@ -624,7 +677,8 @@ objects:
         - scheme: http
           static_configs:
           - targets:
-            - "localhost:9093"
+            - "prometheus-0.prometheus.${NAMESPACE}.endpoints:9093"
+            - "prometheus-1.prometheus.${NAMESPACE}.endpoints:9093"
 
 - apiVersion: v1
   kind: ConfigMap
@@ -639,6 +693,9 @@ objects:
       route:
         # default route if none match
         receiver: alert-buffer-wh
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 30m  
 
         # The labels by which incoming alerts are grouped together. For example,
         # multiple alerts coming in for cluster=A and alertname=LatencyHigh would
@@ -652,4 +709,4 @@ objects:
       receivers:
       - name: alert-buffer-wh
         webhook_configs:
-        - url: http://localhost:9099/topics/alerts
+        - url: http://alerts-0.alerts.${NAMESPACE}.endpoints:9099/topics/alerts
