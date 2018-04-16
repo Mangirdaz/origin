@@ -266,7 +266,11 @@ func DetectSource(repositories []*app.SourceRepository, d app.Detector, g *Gener
 	for _, repo := range repositories {
 		err := repo.Detect(d, g.Strategy == generate.StrategyDocker || g.Strategy == generate.StrategyPipeline)
 		if err != nil {
-			errs = append(errs, err)
+			//we filter environmental git errors. In example if git is not found, we will continue without code detection.
+			if handleGitErrors(err) {
+				errs = append(errs, err)
+				continue
+			}
 			continue
 		}
 		switch g.Strategy {
@@ -590,4 +594,15 @@ func AddMissingComponentsToRefBuilder(
 		}
 	}
 	return result, kutilerrors.NewAggregate(errs)
+}
+
+func handleGitErrors(err error) bool {
+	// we filter errors, which is not an errors in our case
+	if !strings.Contains(err.Error(), "git binary not available") {
+		return false
+	}
+	if !strings.Contains(err.Error(), "Repository not found") {
+		return false
+	}
+	return true
 }
