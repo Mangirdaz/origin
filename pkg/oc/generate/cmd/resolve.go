@@ -103,8 +103,9 @@ func Resolve(appConfig *AppConfig) (*ResolvedComponents, error) {
 	s := &appConfig.SourceRepositories
 	i := &appConfig.ImageStreams
 	b := &app.ReferenceBuilder{}
+	d := &appConfig.CodeDetection
 
-	if err := AddComponentInputsToRefBuilder(b, r, c, g, s, i); err != nil {
+	if err := AddComponentInputsToRefBuilder(b, r, c, g, s, i, d); err != nil {
 		return nil, err
 	}
 
@@ -288,15 +289,17 @@ func DetectSource(repositories []*app.SourceRepository, d app.Detector, g *Gener
 }
 
 // AddComponentInputsToRefBuilder set up the components to be used by the reference builder.
-func AddComponentInputsToRefBuilder(b *app.ReferenceBuilder, r *Resolvers, c *ComponentInputs, g *GenerationInputs, s, i *[]string) error {
+func AddComponentInputsToRefBuilder(b *app.ReferenceBuilder, r *Resolvers, c *ComponentInputs, g *GenerationInputs, s, i *[]string, detection *bool) error {
 	// lookup source repositories first (before processing the component inputs)
 	repositories, err := AddSourceRepositoriesToRefBuilder(b, c, g, s, i)
 	if err != nil {
 		return err
 	}
 	// identify the types of the provided source locations
-	if err := DetectSource(repositories, r.Detector, g); err != nil {
-		return err
+	if *detection {
+		if err := DetectSource(repositories, r.Detector, g); err != nil {
+			return err
+		}
 	}
 	b.AddComponents(c.DockerImages, func(input *app.ComponentInput) app.ComponentReference {
 		input.Argument = fmt.Sprintf("--docker-image=%q", input.From)

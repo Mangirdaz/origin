@@ -101,6 +101,7 @@ type AppConfig struct {
 	ResolvedComponents *ResolvedComponents
 
 	SkipGeneration bool
+	CodeDetection  bool
 
 	AllowSecretUse bool
 	SourceSecret   string
@@ -690,7 +691,8 @@ func (c *AppConfig) RunQuery() (*QueryResult, error) {
 	b := &app.ReferenceBuilder{}
 	s := &c.SourceRepositories
 	i := &c.ImageStreams
-	if err := AddComponentInputsToRefBuilder(b, &c.Resolvers, &c.ComponentInputs, &c.GenerationInputs, s, i); err != nil {
+	d := &c.CodeDetection
+	if err := AddComponentInputsToRefBuilder(b, &c.Resolvers, &c.ComponentInputs, &c.GenerationInputs, s, i, d); err != nil {
 		return nil, err
 	}
 	components, repositories, errs := b.Result()

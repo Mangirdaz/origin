@@ -223,7 +223,7 @@ func (r *SourceRepository) Detect(d Detector, dockerStrategy bool) error {
 	}
 	path, err := r.LocalPath()
 	if err != nil {
-		return err
+		return filterGitErrors(err)
 	}
 	r.info, err = d.Detect(path, dockerStrategy)
 	if err != nil {
@@ -601,4 +601,18 @@ func CloneAndCheckoutSources(repo git.Repository, remote, ref, localDir, context
 		glog.V(5).Infof("Using context directory %q. The full source path is %q", contextDir, filepath.Join(localDir, contextDir))
 	}
 	return filepath.Join(localDir, contextDir), nil
+}
+
+// filterGitErrors replaces certain errors we may get from the git client that we want to replace
+// specifically errors related to authentication or the lack of a git binary.
+func filterGitErrors(err error) error {
+	newErr := fmt.Errorf("Code detection is not possible. If you want skip it add flag --code-detection=false")
+	// we filter errors, which is not an errors in our case
+	if strings.Contains(err.Error(), "git binary not available") {
+		return newErr
+	}
+	if strings.Contains(err.Error(), "Repository not found") {
+		return newErr
+	}
+	return err
 }
